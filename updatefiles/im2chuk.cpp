@@ -65,7 +65,7 @@ void chuk2im_cpu(const Dtype* data_chuk, const int channels,
       for (int w = 0; w < width_chuk; ++w) {
         int h_im = h_offset * stride_h * local_h + h;
         int w_im = w_offset * stride_w * local_w + w;
-          data_im[(c_im * height + h_im) * width + w_im] = 
+          data_im[(c_im * height + h_im) * width + w_im] += 
             data_chuk[(c * height_chuk + h) * width_chuk + w];
       }
     }

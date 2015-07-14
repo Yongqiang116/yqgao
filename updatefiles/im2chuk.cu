@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <stdio.h>
 
 #include "caffe/common.hpp"
 #include "caffe/util/im2chuk.hpp"
@@ -43,6 +44,7 @@ void im2chuk_gpu(const Dtype* data_im, const int channels,
     Dtype* data_chuk) {
   // We are going to launch channels * height_col * width_col kernels, each
   // kernel responsible for copying a single-channel grid.
+  
   int height_chuk = kernel_h + stride_h * (local_h - 1);
   int width_chuk = kernel_w + stride_w * (local_w - 1);
   int num_h_chuk = (height - height_chuk) / stride_h / local_h + 1;
@@ -72,26 +74,30 @@ template <typename Dtype>
 __global__ void chuk2im_gpu_kernel(const int n, const Dtype* data_chuk,
     const int height, const int width, const int channels,
     const int stride_h, const int stride_w,
-    const int height_chuk, const int width_chuk,
+    const int height_chuk, const int width_chuk, 
+    const int num_h_chuk, const int num_w_chuk,
     Dtype* data_im) {
   CUDA_KERNEL_LOOP(index, n) {
-    // int num_h_chuk = (height - height_chuk) / stride_h + 1;
-    int num_w_chuk = (width - width_chuk) / stride_w + 1;
-    int th_width = index / channels % num_w_chuk;
-    int th_height = index / channels / num_w_chuk;
-    int channel_in = index % channels;
-    int height_in = th_height * stride_h;
-    int width_in = th_width * stride_w;
-    const Dtype* data_chuk_ptr = data_chuk;
-    data_chuk_ptr += (index * height_chuk + 0) * width_chuk + 0;
-    Dtype* data_im_ptr = data_im;
-    data_im_ptr += (channel_in * height + height_in) * width + width_in;
-    for (int i = 0; i < height_chuk; ++i) {
-      for (int j = 0; j < width_chuk; ++j) {
-        *(data_im_ptr + i * width + j) = 
-          data_chuk_ptr[i * width_chuk + j];
+    Dtype val = 0;
+    int w = index % width;
+    int h = (index / width) % height;
+    int c = index / (width * height);
+    // compute the start and end of the output
+    int w_chuk_start = (w < width_chuk) ? 0 : (w - width_chuk) / stride_w + 1; 
+    int w_chuk_end = min(w / stride_w + 1, (width - width_chuk) / stride_w + 1);
+    int h_chuk_start = (h < height_chuk) ? 0 : (h - height_chuk) / stride_h + 1; 
+    int h_chuk_end = min(h / stride_h + 1, (height - height_chuk) / stride_h + 1);
+
+    for (int h_chuk = h_chuk_start; h_chuk < h_chuk_end; ++h_chuk) {
+      for (int w_chuk = w_chuk_start; w_chuk < w_chuk_end; ++w_chuk) {
+        int w_out = w - stride_w * w_chuk;
+        int h_out = h -  stride_h * h_chuk;
+        int c_out = channels * (h_chuk * num_w_chuk + w_chuk) + c;
+        val += data_chuk[c_out * height_chuk * width_chuk + h_out * width_chuk + w_out];
       }
     }
+
+    data_im[index] = val;    
   }
 }
 
@@ -105,7 +111,8 @@ void chuk2im_gpu(const Dtype* data_chuk, const int channels,
   int num_h_chuk = (height - height_chuk) / stride_h / local_h + 1;
   int num_w_chuk = (width - width_chuk) / stride_w / local_w + 1; 
 
-  int num_kernels = channels * num_h_chuk * num_w_chuk;
+  int num_kernels = channels * height * width;
+  
   // To avoid involving atomic operations, we will launch one kernel per
   // bottom dimension, and then in the kernel add up the top dimensions.
   // NOLINT_NEXT_LINE(whitespace/operators)
@@ -113,7 +120,8 @@ void chuk2im_gpu(const Dtype* data_chuk, const int channels,
                              CAFFE_CUDA_NUM_THREADS>>>(
       num_kernels, data_chuk, height, width, channels,
       stride_h * local_h, stride_w * local_w, 
-      height_chuk, width_chuk, data_im);
+      height_chuk, width_chuk, num_h_chuk, num_w_chuk, 
+      data_im);
   CUDA_POST_KERNEL_CHECK;
 }
 
